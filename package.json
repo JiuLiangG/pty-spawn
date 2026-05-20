@@ -1,13 +1,14 @@
 {
   "name": "pty-spawn",
-  "version": "0.1.0",
-  "description": "PTY-based bash execution for pi — makes isatty()=true",
+  "version": "0.2.0",
+  "description": "PTY-based bash execution for pi — makes isatty()=true, with headless terminal emulation",
   "keywords": ["pi-package"],
   "pi": {
     "extensions": ["./src/index.ts"]
   },
   "dependencies": {
-    "node-pty": "^1.0.0"
+    "node-pty": "^1.0.0",
+    "@xterm/headless": "^5.5.0"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "*",
