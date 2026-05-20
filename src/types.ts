@@ -22,3 +22,19 @@ export interface SpawnOptions {
   onData: (data: string) => void;
   onExit: (exitCode: number) => void;
 }
+
+/** A snapshot of the terminal screen at a point in time */
+export interface ScreenSnapshot {
+  /** Screen content, one string per row (trimmed at right) */
+  lines: string[];
+  /** Cursor column position (0-based) */
+  cursorX: number;
+  /** Cursor row position (0-based) */
+  cursorY: number;
+  /** Terminal column count */
+  cols: number;
+  /** Terminal row count */
+  rows: number;
+  /** True when in alternate screen buffer (full-screen TUI mode) */
+  isAlternateBuffer: boolean;
+}
