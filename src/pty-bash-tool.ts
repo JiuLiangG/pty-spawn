@@ -3,14 +3,35 @@ import { Type } from "typebox";
 import { spawnPty } from "./pty-manager.js";
 
 /**
- * Strip ANSI escape sequences from a string.
- * Covers SGR, cursor movement, screen clear, OSC, and charset sequences.
+ * Strip ANSI escape sequences and PTY artifacts from a string.
+ *
+ * Covers:
+ * - CSI sequences: \x1b[ + optional prefix (?>=!) + params + final byte
+ *   e.g. \x1b[31m (SGR), \x1b[?25h (DEC show cursor), \x1b[2J (clear)
+ * - OSC sequences: \x1b] ... BEL or \x1b] ... ST
+ *   e.g. \x1b]0;title\x07 (set window title)
+ * - Charset designators: \x1b( \x1b)
+ * - Single-char escapes: \x1b= \x1b> \x1bN \x1bO \x1b7 \x1b8 etc.
+ * - Carriage returns: PTY sends \r\n, we strip \r
+ * - BEL character: \x07
+ *
  * Good enough for line-oriented output; full-screen TUI output will lose layout.
  */
 function stripAnsi(str: string): string {
-  return str.replace(
-    /\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]/g,
-    ""
+  return (
+    str
+      // CSI sequences: \x1b[ + optional ?>=! prefix + digits/semicolons + final byte
+      .replace(/\x1b\[[?>=!]?[0-9;]*[A-Za-z@`~]/g, "")
+      // OSC sequences terminated by BEL (\x07) or ST (\x1b\\)
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+      // Charset designators: \x1b( or \x1b) followed by a letter/digit
+      .replace(/\x1b[()][A-Z0-9]/g, "")
+      // Single-character escapes: \x1b followed by one char (=, >, <, N, O, 7, 8, etc.)
+      .replace(/\x1b[>=<NO78~]/g, "")
+      // BEL character
+      .replace(/\x07/g, "")
+      // Carriage returns (PTY sends \r\n line endings)
+      .replace(/\r/g, "")
   );
 }
 
