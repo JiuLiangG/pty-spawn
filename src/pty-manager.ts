@@ -4,15 +4,28 @@ import type { PtyHandle, SpawnOptions } from "./types.js";
 const activePtys = new Set<PtyHandle>();
 
 /**
+ * Wrap a command to disable PTY echo and line processing before execution.
+ *
+ * PTY line discipline has echo enabled by default, which causes output
+ * duplication (the terminal echoes back everything written to it).
+ * `stty -echo` disables this. `stty -onlcr` prevents \n → \r\n conversion.
+ */
+function wrapCommand(command: string): string {
+  if (process.platform === "win32") return command;
+  return `stty -echo -onlcr 2>/dev/null; ${command}`;
+}
+
+/**
  * Spawn a command inside a real PTY.
  * The child process sees isatty()=true and TERM=xterm-256color.
  */
 export function spawnPty(options: SpawnOptions): PtyHandle {
   const shell = process.platform === "win32" ? "cmd.exe" : "/bin/sh";
+  const wrappedCommand = wrapCommand(options.command);
   const args =
     process.platform === "win32"
       ? ["/c", options.command]
-      : ["-c", options.command];
+      : ["-c", wrappedCommand];
 
   const ptyProcess = pty.spawn(shell, args, {
     name: "xterm-256color",
