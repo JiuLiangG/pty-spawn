@@ -8,17 +8,18 @@ function runPty(command: string): Promise<{ output: string; exitCode: number }> 
     let output = "";
     let exited = false;
     let code = -1;
+    let timer: ReturnType<typeof setTimeout> | null = null;
 
     const settle = () => {
-      // Give ConPTY 200ms to flush remaining onData after onExit
-      setTimeout(() => resolve({ output, exitCode: code }), 200);
+      if (timer) clearTimeout(timer);
+      // Give ConPTY 500ms to flush remaining onData after onExit
+      timer = setTimeout(() => resolve({ output, exitCode: code }), 500);
     };
 
     spawnPty({
       command,
       onData: (data) => {
         output += data;
-        // If already exited, settle again to extend the window
         if (exited) settle();
       },
       onExit: (c) => {
@@ -39,17 +40,17 @@ describe("pty-manager", () => {
   });
 
   test("isatty returns true in PTY", async () => {
+    // Use setTimeout so the process lives long enough for ConPTY to deliver data
     const { output } = await runPty(
-      'node -e "console.log(process.stdout.isTTY)"'
+      'node -e "setTimeout(() => console.log(process.stdout.isTTY), 100)"'
     );
     const cleaned = cleanOutput(output);
-    // Debug: if still empty, show raw hex
     if (!cleaned.includes("true")) {
       console.log("raw output hex:", Buffer.from(output).toString("hex"));
       console.log("raw output repr:", JSON.stringify(output));
     }
     expect(cleaned).toContain("true");
-  });
+  }, 10000);
 
   test("kill terminates process", () => {
     const handle = spawnPty({
