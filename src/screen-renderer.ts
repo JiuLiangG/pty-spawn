@@ -7,13 +7,10 @@ import type { ScreenSnapshot } from "./types.js";
  * Every chunk from node-pty's onData is fed into write().
  * At any point, snapshot() or renderForLLM() reads the screen.
  *
- * This replaces the regex-based cleanOutput pipeline with a real
- * terminal emulator that correctly handles:
- * - Cursor positioning (\x1b[H, \x1b[row;colH)
- * - Screen clear (\x1b[2J)
- * - Alternate screen buffer (\x1b[?1049h/l)
- * - Line wrapping, scrolling, erase sequences
- * - All SGR attributes (silently consumed, not in output)
+ * IMPORTANT: Terminal.write() is asynchronous — data is queued and
+ * processed in the next microtask. In production this is fine because
+ * reads happen well after writes (on exit or periodic updates).
+ * For tests or synchronous reads, call await flush() first.
  */
 export class ScreenRenderer {
   private terminal: Terminal;
@@ -23,19 +20,28 @@ export class ScreenRenderer {
       cols,
       rows,
       allowProposedApi: true,
-      // Keep scrollback bounded. For LLM consumption we mostly care
-      // about the visible screen, but line-oriented command output
-      // can exceed the visible area.
       scrollback: 100,
     });
   }
 
   /**
    * Feed raw PTY output into the terminal emulator.
-   * Call this from the onData callback.
+   * Note: processing is asynchronous. Call flush() before reading
+   * if you need the buffer to be up-to-date immediately.
    */
   write(data: string): void {
     this.terminal.write(data);
+  }
+
+  /**
+   * Wait for all pending write data to be processed.
+   * Call this before snapshot() or renderForLLM() when you need
+   * guaranteed up-to-date buffer contents (mainly in tests).
+   */
+  flush(): Promise<void> {
+    return new Promise((resolve) => {
+      this.terminal.write("", resolve);
+    });
   }
 
   /**
@@ -75,14 +81,12 @@ export class ScreenRenderer {
     const allLines: string[] = [];
 
     if (isAlt) {
-      // Alternate buffer: only visible screen matters
       for (let y = 0; y < this.terminal.rows; y++) {
         const line = buffer.getLine(y);
         allLines.push(line ? line.translateToString(true) : "");
       }
     } else {
-      // Normal buffer: include scrollback + visible area
-      const scrollback = buffer.baseY; // lines scrolled off top
+      const scrollback = buffer.baseY;
       const totalLines = scrollback + this.terminal.rows;
       for (let y = 0; y < totalLines; y++) {
         const line = buffer.getLine(y);
@@ -90,14 +94,12 @@ export class ScreenRenderer {
       }
     }
 
-    // Trim trailing empty lines
     while (allLines.length > 0 && allLines[allLines.length - 1].trim() === "") {
       allLines.pop();
     }
 
     let result = allLines.join("\n");
 
-    // For alternate buffer, add a hint so the LLM knows it's TUI output
     if (isAlt) {
       result =
         "[TUI screen " +
