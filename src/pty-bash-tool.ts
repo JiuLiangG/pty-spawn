@@ -3,6 +3,54 @@ import { Type } from "typebox";
 import { spawnPty } from "./pty-manager.js";
 
 /**
+ * Preprocess raw PTY output to handle screen-oriented commands
+ * before ANSI stripping.
+ *
+ * ConPTY (Windows) and some programs use cursor positioning to
+ * redraw the screen. Without a terminal emulator, we simulate
+ * the most common patterns:
+ *
+ * - \x1b[2J (clear screen): discard everything before it
+ * - \x1b[H  (cursor home):  discard everything before it
+ *   These handle the "partial write then full redraw" pattern.
+ *
+ * - \x1b[nC (cursor forward n): replace with n spaces
+ * - \x1b[nX (erase n chars):   remove (chars already blanked)
+ */
+function preprocessScreenCommands(str: string): string {
+  // Find the last cursor-home or clear-screen sequence.
+  // Everything before it was overwritten on a real terminal.
+  // We search for \x1b[H and \x1b[2J, taking the latest occurrence.
+  let lastRedrawEnd = 0;
+
+  // \x1b[2J — clear entire screen
+  let idx = str.lastIndexOf("\x1b[2J");
+  if (idx >= 0) {
+    lastRedrawEnd = Math.max(lastRedrawEnd, idx + 4); // 4 = length of \x1b[2J
+  }
+
+  // \x1b[H — cursor home (row 1, col 1)
+  // Search after the last clear-screen to find the latest home
+  const homeSeq = "\x1b[H";
+  idx = str.lastIndexOf(homeSeq);
+  if (idx >= 0) {
+    lastRedrawEnd = Math.max(lastRedrawEnd, idx + 3); // 3 = length of \x1b[H
+  }
+
+  if (lastRedrawEnd > 0) {
+    str = str.slice(lastRedrawEnd);
+  }
+
+  // \x1b[nC — cursor forward n columns → replace with n spaces
+  str = str.replace(/\x1b\[(\d+)C/g, (_, n) => " ".repeat(parseInt(n, 10)));
+
+  // \x1b[nX — erase n characters → remove
+  str = str.replace(/\x1b\[\d*X/g, "");
+
+  return str;
+}
+
+/**
  * Strip ANSI escape sequences from a string.
  *
  * Covers:
@@ -15,41 +63,25 @@ import { spawnPty } from "./pty-manager.js";
 function stripAnsiCodes(str: string): string {
   return (
     str
-      // CSI sequences: \x1b[ + optional ?>=! prefix + digits/semicolons + final byte
       .replace(/\x1b\[[?>=!]?[0-9;]*[A-Za-z@`~]/g, "")
-      // OSC sequences terminated by BEL (\x07) or ST (\x1b\\)
       .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
-      // Charset designators: \x1b( or \x1b) followed by a letter/digit
       .replace(/\x1b[()][A-Z0-9]/g, "")
-      // Single-character escapes: \x1b followed by one char
       .replace(/\x1b[>=<NO78~]/g, "")
-      // BEL character
       .replace(/\x07/g, "")
   );
 }
 
 /**
  * Simulate carriage return (\r) behavior.
- *
- * In a real terminal, \r moves the cursor back to column 0 and subsequent
- * characters overwrite what was there. Programs like `ls` may write a partial
- * line, then \r-overwrite it with the final formatted output.
- *
- * Simply deleting \r would concatenate both versions. Instead, for each line
- * we only keep the content after the last standalone \r.
- *
- * \r\n is treated as a normal line break (newline), not a rewrite.
+ * \r\n → normal newline. Standalone \r → keep only text after last \r.
  */
 function processCarriageReturns(str: string): string {
-  // First, normalize \r\n to \n (these are line breaks, not rewrites)
   let result = str.replace(/\r\n/g, "\n");
-  // Then, for standalone \r (line rewrite), keep only the last segment
   result = result
     .split("\n")
     .map((line) => {
       if (!line.includes("\r")) return line;
       const parts = line.split("\r");
-      // Keep the last non-empty part (the final overwrite)
       for (let i = parts.length - 1; i >= 0; i--) {
         if (parts[i].length > 0) return parts[i];
       }
@@ -61,21 +93,22 @@ function processCarriageReturns(str: string): string {
 
 /**
  * Clean PTY output for LLM consumption.
- * 1. Strip ANSI escape sequences
- * 2. Simulate \r carriage return behavior
- * 3. Trim trailing whitespace and collapse excessive blank lines
+ *
+ * Pipeline:
+ * 1. Preprocess screen commands (handle ConPTY redraw, cursor forward, erase)
+ * 2. Strip remaining ANSI escape sequences
+ * 3. Simulate \r carriage return behavior
+ * 4. Trim whitespace and collapse excessive blank lines
  */
 function cleanOutput(str: string): string {
-  let result = stripAnsiCodes(str);
+  let result = preprocessScreenCommands(str);
+  result = stripAnsiCodes(result);
   result = processCarriageReturns(result);
-  // Trim trailing whitespace from each line
   result = result
     .split("\n")
     .map((line) => line.trimEnd())
     .join("\n");
-  // Collapse 3+ consecutive blank lines into 2
   result = result.replace(/\n{3,}/g, "\n\n");
-  // Trim leading/trailing whitespace from the whole output
   result = result.trim();
   return result;
 }
@@ -121,7 +154,6 @@ export function registerPtyBashTool(pi: ExtensionAPI) {
           onData: (chunk) => {
             if (settled) return;
             output += chunk;
-            // Stream partial output so pi knows the command is still running
             onUpdate?.({
               content: [{ type: "text", text: cleanOutput(output) }],
             });
@@ -142,7 +174,6 @@ export function registerPtyBashTool(pi: ExtensionAPI) {
           },
         });
 
-        // Timeout
         const timer = setTimeout(() => {
           if (settled) return;
           settled = true;
@@ -162,7 +193,6 @@ export function registerPtyBashTool(pi: ExtensionAPI) {
           });
         }, timeout);
 
-        // Escape cancellation
         signal?.addEventListener("abort", () => {
           if (settled) return;
           settled = true;
