@@ -1,16 +1,19 @@
 # pty-spawn
 
-A minimal [pi](https://github.com/earendil-works/pi) extension that runs bash commands in a real PTY.
+A minimal [pi](https://github.com/earendil-works/pi) extension that runs bash commands in a real PTY with headless terminal emulation.
 
 ## Why
 
-pi's built-in `bash` tool uses `stdio: "pipe"`, so `isatty()` returns `false`. Many programs behave differently (or refuse to work) without a terminal. This extension fixes that with a single dependency: `node-pty`.
+pi's built-in `bash` tool uses `stdio: "pipe"`, so `isatty()` returns `false`. Many programs behave differently (or refuse to work) without a terminal. This extension fixes that with two dependencies: `node-pty` for the PTY layer and `@xterm/headless` for terminal emulation.
 
 ## What it does
 
 - Spawns commands via `node-pty` instead of `child_process.spawn`
 - Child process sees `isatty()=true` and `TERM=xterm-256color`
-- ANSI escape sequences are stripped before returning output to the LLM
+- Raw PTY output is fed into `@xterm/headless` — a real terminal emulator
+- Screen buffer is read as clean text for the LLM (no ANSI codes, correct cursor positioning)
+- Full-screen TUI programs (vim, htop, top) render correctly via alternate screen buffer detection
+- Falls back to regex-based ANSI stripping if `@xterm/headless` is unavailable
 - Supports timeout and cancellation (Escape)
 - Cleans up all PTY processes on session shutdown
 
@@ -51,38 +54,52 @@ pty_bash("npm init")                  # interactive wizard works
 pty_bash("python3")                   # REPL starts properly
 pty_bash("ssh user@host")             # password prompt works
 
-# Colored output is captured (then stripped for LLM)
+# Full-screen TUI programs render correctly
+pty_bash("htop")                      # screen captured via xterm emulation
+pty_bash("vim file.txt")              # alternate buffer detected
+
+# Colored output is captured and cleaned
 pty_bash("ls --color=always")
 pty_bash("cargo build 2>&1")
 ```
+
+## Architecture
+
+```
+PTY (node-pty)  →  raw bytes  →  ScreenRenderer (@xterm/headless)  →  clean text
+                                         ↓ fallback
+                                  cleanOutput (regex pipeline)
+```
+
+- **G2a layer** (`pty-manager.ts`, `clean-output.ts`): PTY spawning + regex-based output cleaning
+- **G2b layer** (`screen-renderer.ts`): Headless terminal emulation via `@xterm/headless`
+- **Integration** (`pty-bash-tool.ts`): Uses G2b when available, falls back to G2a
 
 ## File structure
 
 ```
 pty-spawn/
-├── package.json              # pi extension manifest + deps
+├── package.json              # pi extension manifest + deps (v0.2.0)
 ├── tsconfig.json
 ├── README.md
 ├── SKILL.md                  # LLM guidance
 ├── src/
 │   ├── index.ts              # Extension entry (~20 lines)
-│   ├── pty-manager.ts        # PTY lifecycle (~70 lines)
-│   ├── pty-bash-tool.ts      # Tool definition (~100 lines)
-│   └── types.ts              # Shared types (~20 lines)
+│   ├── types.ts              # Shared types: PtyHandle, SpawnOptions, ScreenSnapshot (~40 lines)
+│   ├── pty-manager.ts        # PTY lifecycle: spawn, kill, cleanup (~70 lines)
+│   ├── clean-output.ts       # G2a regex pipeline: fallback output cleaning (~80 lines)
+│   ├── screen-renderer.ts    # G2b core: @xterm/headless wrapper (~120 lines)
+│   └── pty-bash-tool.ts      # Tool registration + execution (~110 lines)
 └── test/
-    └── pty-manager.test.ts   # Unit tests (~40 lines)
+    ├── pty-manager.test.ts   # PTY unit tests (~40 lines)
+    └── screen-renderer.test.ts # ScreenRenderer tests (~90 lines)
 ```
 
-Total: ~310 lines.
+Total: ~570 lines.
 
 ## Roadmap
 
-This is **G2a** — the PTY pipe layer. Future additions:
-
 - **Persistent sessions** (+~100 lines): `pty_start` / `pty_send` / `pty_read` for multi-turn interactive sessions
-- **Terminal emulation** (+~500 lines): `@xterm/headless` rendering for full TUI support (becomes g2-terminal / G2a+G2b)
-
-Each layer is purely additive — no existing code needs to change.
 
 ## License
 
