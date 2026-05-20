@@ -1,5 +1,6 @@
 import { describe, test, expect } from "vitest";
 import { spawnPty, killAllPtys } from "../src/pty-manager.js";
+import { cleanOutput } from "../src/clean-output.js";
 
 describe("pty-manager", () => {
   test("spawns command and captures output", async () => {
@@ -14,8 +15,8 @@ describe("pty-manager", () => {
       });
     });
     expect(exitCode).toBe(0);
-    expect(output).toContain("hello");
-    expect(output).toContain("world");
+    expect(cleanOutput(output)).toContain("hello");
+    expect(cleanOutput(output)).toContain("world");
   });
 
   test("isatty returns true in PTY", async () => {
@@ -29,7 +30,7 @@ describe("pty-manager", () => {
         onExit: (code) => resolve(code),
       });
     });
-    expect(output).toContain("true");
+    expect(cleanOutput(output)).toContain("true");
   });
 
   test("kill terminates process", () => {
