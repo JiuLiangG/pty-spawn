@@ -40,10 +40,8 @@ describe("pty-manager", () => {
   });
 
   test("isatty returns true in PTY", async () => {
-    // Use setTimeout so the process lives long enough for ConPTY to deliver data
-    const { output } = await runPty(
-      'node -e "setTimeout(() => console.log(process.stdout.isTTY), 100)"'
-    );
+    // node -p evaluates and prints; no quotes needed, avoids cmd.exe mangling
+    const { output } = await runPty("node -p process.stdout.isTTY");
     const cleaned = cleanOutput(output);
     if (!cleaned.includes("true")) {
       console.log("raw output hex:", Buffer.from(output).toString("hex"));
