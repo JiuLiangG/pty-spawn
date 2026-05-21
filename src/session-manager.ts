@@ -1,6 +1,11 @@
 import * as pty from "node-pty";
+import { EventEmitter } from "events";
 import { ScreenRenderer } from "./screen-renderer.js";
 import type { PtyHandle } from "./types.js";
+import type { SessionInfo } from "./ipc-protocol.js";
+
+/** Maximum raw output buffer size per session (1MB). */
+const MAX_RAW_OUTPUT = 1024 * 1024;
 
 export interface Session {
   id: string;
@@ -9,6 +14,8 @@ export interface Session {
   rawOutput: string;
   exited: boolean;
   exitCode: number | null;
+  /** Event emitter for real-time output streaming (attach support). */
+  emitter: EventEmitter;
 }
 
 const sessions = new Map<string, Session>();
@@ -24,6 +31,8 @@ export function createSession(cwd?: string): Session {
   const cols = 80;
   const rows = 24;
   const renderer = new ScreenRenderer(cols, rows);
+  const emitter = new EventEmitter();
+  emitter.setMaxListeners(20);
 
   // Spawn shell directly (not through spawnPty which wraps with -c)
   const shell = process.platform === "win32" ? "cmd.exe" : "/bin/bash";
@@ -46,17 +55,25 @@ export function createSession(cwd?: string): Session {
     rawOutput: "",
     exited: false,
     exitCode: null,
+    emitter,
   };
 
   ptyProcess.onData((data: string) => {
+    // Append to raw output buffer (with cap)
     session.rawOutput += data;
+    if (session.rawOutput.length > MAX_RAW_OUTPUT) {
+      session.rawOutput = session.rawOutput.slice(-MAX_RAW_OUTPUT);
+    }
     renderer.write(data);
+    // Notify attach listeners with raw data
+    emitter.emit("data", data);
   });
 
   ptyProcess.onExit(({ exitCode }) => {
     alive = false;
     session.exited = true;
     session.exitCode = exitCode;
+    emitter.emit("exit", exitCode);
   });
 
   const handle: PtyHandle = {
@@ -116,6 +133,7 @@ export function closeSession(id: string): void {
   if (!s) return;
   if (!s.exited) s.handle.kill();
   s.renderer.dispose();
+  s.emitter.removeAllListeners();
   sessions.delete(id);
 }
 
@@ -133,4 +151,40 @@ export function getSessionStatus(id: string): { exists: boolean; exited: boolean
   const s = sessions.get(id);
   if (!s) return { exists: false, exited: false };
   return { exists: true, exited: s.exited };
+}
+
+// ── G2d: Attach support exports ────────────────────────────────────
+
+/**
+ * List all sessions with their current status.
+ * Used by IPC server for the "list" command.
+ */
+export function listSessions(): SessionInfo[] {
+  const result: SessionInfo[] = [];
+  for (const s of sessions.values()) {
+    result.push({
+      id: s.id,
+      exited: s.exited,
+      exitCode: s.exitCode,
+    });
+  }
+  return result;
+}
+
+/**
+ * Get the EventEmitter for a session (used by IPC server for attach).
+ * Returns null if the session does not exist.
+ */
+export function getSessionEmitter(id: string): EventEmitter | null {
+  const s = sessions.get(id);
+  return s ? s.emitter : null;
+}
+
+/**
+ * Get the raw output history of a session (used for attach replay).
+ * Returns null if the session does not exist.
+ */
+export function getSessionRawOutput(id: string): string | null {
+  const s = sessions.get(id);
+  return s ? s.rawOutput : null;
 }
