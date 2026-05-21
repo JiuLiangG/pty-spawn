@@ -19,6 +19,7 @@ import {
   getSessionEmitter,
   getSessionRawOutput,
   getSessionStatus,
+  getSessionDimensions,
 } from "./session-manager.js";
 import {
   encodeMessage,
@@ -126,7 +127,18 @@ function handleMessage(
         return;
       }
 
-      // Send history replay first
+      // Send PTY dimensions first so client can prepare its viewport
+      const dims = getSessionDimensions(sessionId);
+      if (dims) {
+        send(socket, {
+          type: "attached",
+          sessionId,
+          cols: dims.cols,
+          rows: dims.rows,
+        });
+      }
+
+      // Send history replay
       const history = getSessionRawOutput(sessionId);
       if (history && history.length > 0) {
         send(socket, {
