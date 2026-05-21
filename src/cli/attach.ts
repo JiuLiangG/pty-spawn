@@ -51,17 +51,50 @@ function discoverPorts(): { pid: number; port: number }[] {
 }
 
 /**
+ * Resize the local terminal to match the PTY dimensions.
+ * Uses ANSI escape sequence DECSLPP (or xterm window manipulation).
+ * Falls back gracefully if the terminal doesn't support it.
+ */
+function resizeTerminal(cols: number, rows: number): void {
+  // CSI 8 ; rows ; cols t — xterm window resize sequence
+  // Supported by Windows Terminal, iTerm2, xterm, and most modern terminals.
+  process.stdout.write(`\x1b[8;${rows};${cols}t`);
+}
+
+/**
+ * Clear the terminal screen and reset cursor position.
+ */
+function clearScreen(): void {
+  // ESC[2J = clear entire screen, ESC[H = cursor to home (top-left)
+  process.stdout.write("\x1b[2J\x1b[H");
+}
+
+/** Track original terminal size for restore on exit. */
+let originalCols = process.stdout.columns || 80;
+let originalRows = process.stdout.rows || 24;
+let didResize = false;
+
+/**
+ * Restore the original terminal size on exit.
+ */
+function restoreTerminal(): void {
+  if (didResize) {
+    resizeTerminal(originalCols, originalRows);
+    didResize = false;
+  }
+}
+
+/**
  * Attach to a session on a specific IPC server port.
  */
 function attachToPort(port: number, sessionId: string): void {
+  // Save original terminal size before any resize
+  originalCols = process.stdout.columns || 80;
+  originalRows = process.stdout.rows || 24;
+
   const socket = net.connect(port, "127.0.0.1", () => {
     // Send attach request
     socket.write(encodeMessage({ type: "attach", sessionId }));
-
-    // Print header
-    process.stderr.write(
-      `\x1b[90m[pty-spawn] Attached to session ${sessionId} (port ${port}). Press Ctrl+C to detach.\x1b[0m\n`
-    );
   });
 
   let buffer = "";
@@ -77,6 +110,7 @@ function attachToPort(port: number, sessionId: string): void {
   });
 
   socket.on("error", (err) => {
+    restoreTerminal();
     process.stderr.write(
       `\x1b[31m[pty-spawn] Connection error: ${err.message}\x1b[0m\n`
     );
@@ -84,6 +118,7 @@ function attachToPort(port: number, sessionId: string): void {
   });
 
   socket.on("close", () => {
+    restoreTerminal();
     process.stderr.write(
       `\x1b[90m[pty-spawn] Disconnected from server.\x1b[0m\n`
     );
@@ -92,6 +127,7 @@ function attachToPort(port: number, sessionId: string): void {
 
   // Ctrl+C: detach gracefully (don't kill the session)
   process.on("SIGINT", () => {
+    restoreTerminal();
     process.stderr.write(
       `\x1b[90m\n[pty-spawn] Detaching from session ${sessionId}...\x1b[0m\n`
     );
@@ -114,6 +150,31 @@ function handleMessage(
   msg: ServerMessage
 ): void {
   switch (msg.type) {
+    case "attached": {
+      // Server tells us the PTY dimensions — resize local terminal to match
+      const { cols, rows } = msg;
+
+      process.stderr.write(
+        `\x1b[90m[pty-spawn] Attached to session ${sessionId} (PTY: ${cols}x${rows}). Press Ctrl+C to detach.\x1b[0m\n`
+      );
+
+      // Resize local terminal to match PTY if sizes differ
+      const localCols = process.stdout.columns || 80;
+      const localRows = process.stdout.rows || 24;
+
+      if (localCols !== cols || localRows !== rows) {
+        resizeTerminal(cols, rows);
+        didResize = true;
+        process.stderr.write(
+          `\x1b[90m[pty-spawn] Resized terminal: ${localCols}x${localRows} → ${cols}x${rows}\x1b[0m\n`
+        );
+      }
+
+      // Clear screen before history replay for clean rendering
+      clearScreen();
+      break;
+    }
+
     case "data":
       // Decode base64 and write raw bytes to stdout.
       // The user's terminal emulator renders ANSI escapes, colors, etc.
@@ -121,6 +182,7 @@ function handleMessage(
       break;
 
     case "exit":
+      restoreTerminal();
       process.stderr.write(
         `\x1b[90m\n[pty-spawn] Session ${sessionId} exited with code ${msg.exitCode}.\x1b[0m\n`
       );
@@ -128,6 +190,7 @@ function handleMessage(
       break;
 
     case "error":
+      restoreTerminal();
       process.stderr.write(
         `\x1b[31m[pty-spawn] Error: ${msg.message}\x1b[0m\n`
       );
