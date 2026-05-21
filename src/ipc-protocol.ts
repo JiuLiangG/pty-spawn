@@ -43,6 +43,16 @@ export type ServerSessionListMessage = {
   sessions: SessionInfo[];
 };
 
+/** Sent immediately after a successful attach, before history replay. */
+export type ServerAttachedMessage = {
+  type: "attached";
+  sessionId: string;
+  /** PTY column count (width in characters). */
+  cols: number;
+  /** PTY row count (height in lines). */
+  rows: number;
+};
+
 export type ServerDataMessage = {
   type: "data";
   sessionId: string;
@@ -63,6 +73,7 @@ export type ServerErrorMessage = {
 
 export type ServerMessage =
   | ServerSessionListMessage
+  | ServerAttachedMessage
   | ServerDataMessage
   | ServerExitMessage
   | ServerErrorMessage;
