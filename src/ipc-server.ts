@@ -38,8 +38,10 @@ function getPortFilePath(): string {
 
 /**
  * Send a server message to a client socket.
+ * Defensively checks socket state before writing.
  */
 function send(socket: net.Socket, msg: ServerMessage): void {
+  if (socket.destroyed || !socket.writable) return;
   try {
     socket.write(encodeMessage(msg));
   } catch {
@@ -129,8 +131,8 @@ function handleMessage(
 
       // Send PTY dimensions first so client can prepare its viewport
       const dims = getSessionDimensions(sessionId);
-      const cols = dims?.cols ?? 120;
-      const rows = dims?.rows ?? 30;
+      const cols = dims?.cols ?? 80;
+      const rows = dims?.rows ?? 24;
 
       send(socket, {
         type: "attached",
@@ -142,12 +144,9 @@ function handleMessage(
       // Send history replay — capped to ~1 screenful.
       // TUI apps (like Pi) constantly redraw the screen; replaying the
       // entire raw history produces rendering artifacts. Limiting to
-      // the tail avoids this: the terminal only processes the most
-      // recent output and renders cleanly.
+      // the tail avoids this.
       const history = getSessionRawOutput(sessionId);
       if (history && history.length > 0) {
-        // Roughly 1 screenful: cols * rows * 4 bytes (accounts for
-        // ANSI escape sequences and multi-byte chars).
         const maxReplay = cols * rows * 4;
         const tail = history.length > maxReplay
           ? history.slice(-maxReplay)
@@ -171,23 +170,33 @@ function handleMessage(
         return;
       }
 
-      // Subscribe to real-time output
+      // Subscribe to real-time output.
+      // CRITICAL: Use setImmediate to decouple IPC socket writes from
+      // the PTY's onData callback. Without this, emitter.emit("data")
+      // synchronously calls socket.write(), and if the TCP write is
+      // slow (backpressure, large payload, Windows TCP quirks), it
+      // blocks the PTY callback and freezes the entire Pi process.
       const dataListener = (data: string) => {
-        send(socket, {
-          type: "data",
-          sessionId,
-          data: Buffer.from(data).toString("base64"),
+        setImmediate(() => {
+          if (socket.destroyed || !socket.writable) return;
+          const encoded = Buffer.from(data).toString("base64");
+          send(socket, {
+            type: "data",
+            sessionId,
+            data: encoded,
+          });
         });
       };
 
       const exitListener = (code: number) => {
-        send(socket, {
-          type: "exit",
-          sessionId,
-          exitCode: code,
+        setImmediate(() => {
+          send(socket, {
+            type: "exit",
+            sessionId,
+            exitCode: code,
+          });
+          subscriptions.delete(sessionId);
         });
-        // Auto-remove subscription on exit
-        subscriptions.delete(sessionId);
       };
 
       emitter.on("data", dataListener);
@@ -224,6 +233,8 @@ export function startIpcServer(): net.Server {
     console.error("[pty-spawn] IPC server error:", err.message);
   });
 
+  // Use unref() so the TCP server does not prevent the process from
+  // exiting naturally. Attach is optional; it must never keep Pi alive.
   server.listen(0, "127.0.0.1", () => {
     const addr = server.address() as net.AddressInfo;
     const portFile = getPortFilePath();
@@ -234,6 +245,7 @@ export function startIpcServer(): net.Server {
     }
   });
 
+  server.unref();
   return server;
 }
 
