@@ -1,13 +1,19 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerPtyBashTool } from "./pty-bash-tool.js";
+import { registerSessionTools } from "./session-tools.js";
 import { killAllPtys } from "./pty-manager.js";
+import { closeAllSessions } from "./session-manager.js";
 
 export default function (pi: ExtensionAPI) {
-  // Register the pty_bash tool
+  // Register the pty_bash tool (one-shot commands)
   registerPtyBashTool(pi);
 
-  // Clean up all active PTYs when the session ends
+  // Register persistent session tools (pty_start/send/read/close)
+  registerSessionTools(pi);
+
+  // Clean up all active PTYs and sessions when the session ends
   pi.on("session_shutdown", async () => {
+    closeAllSessions();
     killAllPtys();
   });
 }

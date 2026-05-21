@@ -1,7 +1,7 @@
 {
   "name": "pty-spawn",
-  "version": "0.2.0",
-  "description": "PTY-based bash execution for pi — makes isatty()=true, with headless terminal emulation",
+  "version": "0.3.0",
+  "description": "PTY-based bash execution for pi — makes isatty()=true, with headless terminal emulation and persistent sessions",
   "keywords": ["pi-package"],
   "pi": {
     "extensions": ["./src/index.ts"]
