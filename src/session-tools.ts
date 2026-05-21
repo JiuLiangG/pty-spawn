@@ -18,6 +18,11 @@ function sleep(ms: number): Promise<void> {
  * When the AI model constructs JSON tool calls, it often writes
  * "python\\n" which arrives as the literal string "python\n" (backslash + n)
  * rather than "python" + newline. This function fixes that.
+ *
+ * Additionally, \n is mapped to \r (carriage return) because in any PTY,
+ * pressing Enter sends CR (0x0D), not LF (0x0A). The terminal driver
+ * handles CR→LF conversion for the application. This is true on all
+ * platforms (Windows, Unix, macOS).
  */
 function unescapeInput(input: string): string {
   return input.replace(
@@ -26,7 +31,7 @@ function unescapeInput(input: string): string {
       if (hex) return String.fromCharCode(parseInt(hex, 16));
       switch (simple) {
         case "n":
-          return "\n";
+          return "\r"; // Enter = CR in PTY
         case "r":
           return "\r";
         case "t":
