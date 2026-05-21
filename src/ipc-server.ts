@@ -129,22 +129,34 @@ function handleMessage(
 
       // Send PTY dimensions first so client can prepare its viewport
       const dims = getSessionDimensions(sessionId);
-      if (dims) {
-        send(socket, {
-          type: "attached",
-          sessionId,
-          cols: dims.cols,
-          rows: dims.rows,
-        });
-      }
+      const cols = dims?.cols ?? 120;
+      const rows = dims?.rows ?? 30;
 
-      // Send history replay
+      send(socket, {
+        type: "attached",
+        sessionId,
+        cols,
+        rows,
+      });
+
+      // Send history replay — capped to ~1 screenful.
+      // TUI apps (like Pi) constantly redraw the screen; replaying the
+      // entire raw history produces rendering artifacts. Limiting to
+      // the tail avoids this: the terminal only processes the most
+      // recent output and renders cleanly.
       const history = getSessionRawOutput(sessionId);
       if (history && history.length > 0) {
+        // Roughly 1 screenful: cols * rows * 4 bytes (accounts for
+        // ANSI escape sequences and multi-byte chars).
+        const maxReplay = cols * rows * 4;
+        const tail = history.length > maxReplay
+          ? history.slice(-maxReplay)
+          : history;
+
         send(socket, {
           type: "data",
           sessionId,
-          data: Buffer.from(history).toString("base64"),
+          data: Buffer.from(tail).toString("base64"),
         });
       }
 
