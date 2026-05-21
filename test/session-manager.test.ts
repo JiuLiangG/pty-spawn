@@ -92,7 +92,8 @@ describe("session-manager", () => {
     const cmd =
       process.platform === "win32" ? "exit\r\n" : "exit\n";
     sendToSession(session.id, cmd);
-    await sleep(1000); // give process time to exit
+    // Windows ConPTY fires onExit later than onData — need extra time
+    await sleep(2000);
 
     const output = await readSession(session.id);
     expect(output).toContain("[Process exited with code");
