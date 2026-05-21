@@ -12,6 +12,34 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Convert literal escape sequences in tool input to real control characters.
+ *
+ * When the AI model constructs JSON tool calls, it often writes
+ * "python\\n" which arrives as the literal string "python\n" (backslash + n)
+ * rather than "python" + newline. This function fixes that.
+ */
+function unescapeInput(input: string): string {
+  return input.replace(
+    /\\(n|r|t|\\)|\\x([0-9a-fA-F]{2})/g,
+    (match, simple, hex) => {
+      if (hex) return String.fromCharCode(parseInt(hex, 16));
+      switch (simple) {
+        case "n":
+          return "\n";
+        case "r":
+          return "\r";
+        case "t":
+          return "\t";
+        case "\\":
+          return "\\";
+        default:
+          return match;
+      }
+    }
+  );
+}
+
 export function registerSessionTools(pi: ExtensionAPI) {
   // pty_start — Start a new interactive session
   pi.registerTool({
@@ -91,7 +119,8 @@ export function registerSessionTools(pi: ExtensionAPI) {
       onUpdate: ((update: any) => void) | undefined,
       ctx: { cwd: string }
     ) {
-      sendToSession(params.sessionId, params.input);
+      const realInput = unescapeInput(params.input);
+      sendToSession(params.sessionId, realInput);
       await sleep(params.wait ?? 500);
       const output = await readSession(params.sessionId);
       const status = getSessionStatus(params.sessionId);
