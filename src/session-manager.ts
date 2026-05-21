@@ -7,9 +7,13 @@ import type { SessionInfo } from "./ipc-protocol.js";
 /** Maximum raw output buffer size per session (1MB). */
 const MAX_RAW_OUTPUT = 1024 * 1024;
 
-/** Default PTY dimensions — sized for modern terminals. */
-const DEFAULT_COLS = 120;
-const DEFAULT_ROWS = 30;
+/**
+ * Default PTY dimensions.
+ * 80x24 matches the most common default terminal size and avoids
+ * rendering issues when attach windows use their default dimensions.
+ */
+const DEFAULT_COLS = 80;
+const DEFAULT_ROWS = 24;
 
 export interface Session {
   id: string;
