@@ -7,6 +7,10 @@ import type { SessionInfo } from "./ipc-protocol.js";
 /** Maximum raw output buffer size per session (1MB). */
 const MAX_RAW_OUTPUT = 1024 * 1024;
 
+/** Default PTY dimensions — sized for modern terminals. */
+const DEFAULT_COLS = 120;
+const DEFAULT_ROWS = 30;
+
 export interface Session {
   id: string;
   handle: PtyHandle;
@@ -14,6 +18,8 @@ export interface Session {
   rawOutput: string;
   exited: boolean;
   exitCode: number | null;
+  cols: number;
+  rows: number;
   /** Event emitter for real-time output streaming (attach support). */
   emitter: EventEmitter;
 }
@@ -28,8 +34,8 @@ let counter = 0;
  */
 export function createSession(cwd?: string): Session {
   const id = "s" + (++counter);
-  const cols = 80;
-  const rows = 24;
+  const cols = DEFAULT_COLS;
+  const rows = DEFAULT_ROWS;
   const renderer = new ScreenRenderer(cols, rows);
   const emitter = new EventEmitter();
   emitter.setMaxListeners(20);
@@ -55,6 +61,8 @@ export function createSession(cwd?: string): Session {
     rawOutput: "",
     exited: false,
     exitCode: null,
+    cols,
+    rows,
     emitter,
   };
 
@@ -187,4 +195,13 @@ export function getSessionEmitter(id: string): EventEmitter | null {
 export function getSessionRawOutput(id: string): string | null {
   const s = sessions.get(id);
   return s ? s.rawOutput : null;
+}
+
+/**
+ * Get the PTY dimensions of a session.
+ * Returns null if the session does not exist.
+ */
+export function getSessionDimensions(id: string): { cols: number; rows: number } | null {
+  const s = sessions.get(id);
+  return s ? { cols: s.cols, rows: s.rows } : null;
 }
