@@ -29,6 +29,12 @@ import {
 } from "./ipc-protocol.js";
 
 /**
+ * Track all active client sockets so we can force-close them on shutdown.
+ * Without this, server.close() waits for clients to disconnect, hanging Pi.
+ */
+const activeSockets = new Set<net.Socket>();
+
+/**
  * Get the port file path for this process.
  * Includes PID to avoid conflicts when multiple Pi instances run pty-spawn.
  */
@@ -53,6 +59,11 @@ function send(socket: net.Socket, msg: ServerMessage): void {
  * Handle a single client connection.
  */
 function onConnection(socket: net.Socket): void {
+  // Track this socket for shutdown cleanup
+  activeSockets.add(socket);
+  // Unref the socket so it doesn't prevent process exit
+  socket.unref();
+
   let buffer = "";
 
   // Track subscriptions: sessionId → { dataListener, exitListener }
@@ -81,6 +92,7 @@ function onConnection(socket: net.Socket): void {
       }
     }
     subscriptions.clear();
+    activeSockets.delete(socket);
   });
 
   socket.on("error", () => {
@@ -142,9 +154,6 @@ function handleMessage(
       });
 
       // Send history replay — capped to ~1 screenful.
-      // TUI apps (like Pi) constantly redraw the screen; replaying the
-      // entire raw history produces rendering artifacts. Limiting to
-      // the tail avoids this.
       const history = getSessionRawOutput(sessionId);
       if (history && history.length > 0) {
         const maxReplay = cols * rows * 4;
@@ -171,11 +180,8 @@ function handleMessage(
       }
 
       // Subscribe to real-time output.
-      // CRITICAL: Use setImmediate to decouple IPC socket writes from
-      // the PTY's onData callback. Without this, emitter.emit("data")
-      // synchronously calls socket.write(), and if the TCP write is
-      // slow (backpressure, large payload, Windows TCP quirks), it
-      // blocks the PTY callback and freezes the entire Pi process.
+      // Use setImmediate to decouple IPC socket writes from the PTY's
+      // onData callback, preventing event loop blocking.
       const dataListener = (data: string) => {
         setImmediate(() => {
           if (socket.destroyed || !socket.writable) return;
@@ -233,8 +239,6 @@ export function startIpcServer(): net.Server {
     console.error("[pty-spawn] IPC server error:", err.message);
   });
 
-  // Use unref() so the TCP server does not prevent the process from
-  // exiting naturally. Attach is optional; it must never keep Pi alive.
   server.listen(0, "127.0.0.1", () => {
     const addr = server.address() as net.AddressInfo;
     const portFile = getPortFilePath();
@@ -245,15 +249,31 @@ export function startIpcServer(): net.Server {
     }
   });
 
+  // Unref so the server doesn't prevent process exit
   server.unref();
   return server;
 }
 
 /**
- * Stop the IPC server and clean up the port file.
+ * Stop the IPC server and clean up.
+ * Force-destroys all active client connections to prevent hang.
  */
 export function stopIpcServer(server: net.Server): void {
+  // Force-destroy all active client sockets first.
+  // Without this, server.close() blocks until clients disconnect.
+  for (const socket of activeSockets) {
+    try {
+      socket.destroy();
+    } catch {
+      // Ignore errors during forced cleanup.
+    }
+  }
+  activeSockets.clear();
+
+  // Now close the server (no active connections left, returns immediately)
   server.close();
+
+  // Clean up port file
   const portFile = getPortFilePath();
   try {
     fs.unlinkSync(portFile);
